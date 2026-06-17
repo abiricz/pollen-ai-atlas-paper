@@ -1,0 +1,430 @@
+# Copyright 2026 András Biricz. Licensed under the Apache License, Version 2.0.
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Cross-Regional Pollen Retrieval — Experiment Configuration
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#
+# PURPOSE
+# -------
+# Demonstrate the dataset as a reusable morphological retrieval resource.
+# Query: "given a reference grain or expert description, find the same
+# taxon across the million-scale corpus — especially across regions."
+#
+# KEY DESIGN DECISIONS (addressing circularity concerns)
+# -------------------------------------------------------
+# 1. TEXT QUERIES are NOT the raw caption anchors. The anchors were used
+#    inside the VLM captioning prompt, so using them as retrieval queries
+#    creates prompt-coupled circularity. Instead, we derive independent
+#    textual descriptions: same morphological vocabulary, but rewritten
+#    without numeric measurements and with different phrasing.
+#
+# 2. IMAGE QUERIES are one-shot exemplar crops from query_images/.
+#    These were hand-selected for OWL-ViT initialization and are never
+#    part of the mined corpus. They were also shown to the VLM during
+#    captioning (soft pipeline bias — disclosed, not circular).
+#
+# 3. COMBINED (late fusion) tests whether multimodal signals complement
+#    each other for cross-domain retrieval.
+#
+# 4. Only CROSS-REGIONAL species are tested (present in >=2 geographic
+#    origins), avoiding within-region retrieval which is less interesting.
+#
+# QUERY TYPES
+# -----------
+#   IMAGE:    One-shot exemplar crop (01_initialization/query_images/)
+#             Embedded with ViT-Small-LVD (384-d, L2-normed)
+#   TEXT:     Expert-derived morphological descriptor (defined below)
+#             Embedded with SBERT all-MiniLM-L6-v2 (384-d, L2-normed)
+#   COMBINED: alpha * sim_image + (1-alpha) * sim_text (late fusion)
+#
+# RETRIEVAL MODES
+# ---------------
+#   full:           exclude query slide + scanner-step siblings
+#   cross_regional: exclude ALL slides from the query's origin
+#
+# AGGREGATION
+# -----------
+#   Per-slide -> per-species (mean) -> global macro-average
+#   Each species contributes equally regardless of grain count.
+#
+# METRICS
+# -------
+#   P@K, R@K, nDCG@K (K in topk), MRR, mAP@max(topk)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+experiment:
+  name: cross_regional_retrieval
+  description: >
+    Cross-regional morphological retrieval using one-shot image queries
+    and expert-derived text queries (independent of VLM prompt anchors)
+    against the full ~1.48M corpus. Tests whether ViT embeddings and
+    VLM-generated caption embeddings faithfully encode species-level
+    morphology across scanners and geographic origins.
+  version: "2.1"
+
+# ─── Model references ─────────────────────────────────────────────────
+# IMPORTANT: retrieval uses plain pretrained LVD-142M weights (pretrained=True
+# in timm), matching Option A (backbone_checkpoint: null). The finetuned
+# 01_initialization checkpoint is NOT used for retrieval — using it would
+# give a different embedding space than the classification experiments.
+models:
+  vit_backbone: vit_small_patch14_dinov2.lvd142m
+  vit_checkpoint: null    # plain pretrained LVD-142M from timm
+  sbert_model: sentence-transformers/all-MiniLM-L6-v2
+
+# ─── Which VLM caption corpora to evaluate ────────────────────────────
+vlm_models:
+  - gemma4-bf16
+  - qwen25vl
+  - qwen3-fp8
+  - qwen35-fp8
+  - qwen36-fp8
+
+# ─── Retrieval parameters ─────────────────────────────────────────────
+#
+# MODES
+# ─────
+#   all:            No exclusion — the full ~1.5M corpus is queried as-is.
+#                   Text retrieval has reduced circularity (independent query,
+#                   not the raw anchor), but same-slide captions are still
+#                   pipeline-coupled — treat as a ceiling condition.
+#                   Image retrieval is mildly inflated (same-slide grains
+#                   are structurally similar by construction), but is still
+#                   reported with this caveat disclosed.
+#                   Establishes the performance ceiling.
+#
+#   full:           Exclude the query slide AND its scanner-step siblings
+#                   (e.g. betula_edf and betula_2_edf are different
+#                   z-stack passes of the same physical slide preparation).
+#                   Sibling groups are auto-detected: slides that share
+#                   the same base name and differ only by a numeric suffix
+#                   before _edf (e.g. betula_edf, betula_2_edf).
+#                   Interpretation: "find same-species grains on other
+#                   slides of any origin."
+#                   Note: for species with multiple independent slides
+#                   from the same origin (e.g. 3 Swedish Betula), FULL
+#                   still leaves same-origin slides in the corpus.
+#
+#   cross_regional: Exclude ALL slides from the query's geographic origin.
+#                   For species with multiple independent slides from the
+#                   same origin (e.g. Betula: 3 Swedish, Alnus: 2 Swedish),
+#                   this is the scientifically correct mode — FULL leaves
+#                   same-origin slides in the corpus for these species.
+#                   Provides per-origin leave-one-out evaluation.
+#
+retrieval:
+  modes:
+    - all
+    - full
+    - cross_regional
+  modalities:
+    - image
+    - text
+    - combined
+  topk: [1, 5, 10, 20]
+  # Combined uses a single fixed alpha = 0.5 (equal weight to image and text).
+  # Using a sweep was misleading when text dominates due to prompt-conditioning.
+  # 0.5 is a neutral fusion point that gives equal contribution to both modalities.
+  combined_alpha: [0.5]
+
+# ─── Data quality notes ──────────────────────────────────────────────
+# acer_edf: slide filename says "Acer" but 03_captioning/caption_anchors/
+# acer_edf_species.txt says "Alnus". Expert confirmed the pollen contents
+# are genuinely Alnus (slide was mislabeled at acquisition time). The slide
+# is KEPT (NOT excluded) and contributes as a French Alnus exemplar.
+# It is listed under Alnus exemplar_slides below.
+#
+# fabaceae_edf: species label is "Unknown". This slide has no ViT H5 file
+# in the corpus (excluded at captioning stage) and is automatically skipped
+# by load_corpus() which filters Unknown species entries.
+excluded_slides: []
+
+# ─── Extra sibling pairs ─────────────────────────────────────────────
+# Slides that are different scans of the same physical preparation but
+# don't follow the auto-detected _N_edf naming pattern.
+# Each entry is a list of slides that should be treated as siblings.
+extra_siblings:
+  - [Betula_cf_pendula_40x_11_steps_merged_reference,
+     Betula_cf_pendula_11_layers_40x_merged_reference]
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# SPECIES QUERY DEFINITIONS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#
+# For each cross-regional species:
+#   text_query:      Expert-derived morphological description.
+#                    Written independently from the VLM anchor text.
+#                    No numeric measurements. Uses standard palynological
+#                    terminology (aperture type, exine sculpture, symmetry).
+#   exemplar_slides: Slides with one-shot query images for image retrieval.
+#                    Each slide belongs to a different origin.
+#   origins:         Geographic origins where this species appears.
+#
+# Text queries were derived by extracting diagnostic morphological
+# features from PalDat-sourced anchor descriptions, then rewriting them
+# as concise taxonomic descriptions without measurements, percentages,
+# or the exact phrasings used in the VLM captioning prompts.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+species_queries:
+
+  Ambrosia:
+    origins: [French, Hungarian, Swedish]
+    text_query: >
+      A small to medium, spheroidal monad displaying radial symmetry
+      and isopolarity. The aperture configuration is tricolporate with
+      abbreviated furrows, each terminating in a round, operculate os.
+      Dense spinose ornamentation of short, sturdy echinae covers a
+      perforate tectum across the thick sexine. Polar orientation
+      reveals a subtly trilobate amb, while the equatorial profile
+      appears subcircular.
+    exemplar_slides:
+      - slide: ambrosia_edf
+        origin: French
+      - slide: Ambrosia-Iva_reference_10l_1m_Ambrosia_edf
+        origin: Hungarian
+      - slide: Ambrosia_artemisifolia_Asteraceae_14_layers_40x_ZS017_5_mm_circle
+        origin: Swedish
+
+  Betula:
+    origins: [French, Hungarian, Swedish]
+    text_query: >
+      Triporate spheroidal monad of small size, isopolar in symmetry,
+      bearing three circular pores arranged equatorially in a trefoil
+      configuration. Each pore is encircled by a subtle annulus and
+      underlain by a low oncus. The thin exine is tectate-psilate,
+      yielding a uniformly smooth wall surface. Viewed from the pole,
+      the grain presents a circular amb with regularly spaced apertures.
+    exemplar_slides:
+      - slide: betula_edf
+        origin: French
+      - slide: betula_2_edf
+        origin: French
+      - slide: hun_betula_edf
+        origin: Hungarian
+      - slide: Betula_cf_pendula_11_layers_40x_merged_reference
+        origin: Swedish
+      - slide: Betula_cf_pendula_40x_11_steps_merged_reference
+        origin: Swedish
+      - slide: Betula_sp_01_40x_ZS013_Be
+        origin: Swedish
+
+  Alnus:
+    origins: [French, Hungarian, Swedish]
+    # acer_edf: slide named after Acer but expert confirms pollen is Alnus.
+    text_query: >
+      Stephanoaperturate pollen grain of oblate-spheroidal shape bearing
+      four to six elongated pores distributed in an equatorial ring,
+      each bordered by a faint annulus with a low oncus beneath. The
+      exine is tectate-psilate with a smooth wall surface at standard
+      magnifications. Polar view yields a circular outline while
+      equatorial view appears flattened. A diagnostic feature is the
+      presence of arcuate nexinous thickenings bridging adjacent pores.
+    exemplar_slides:
+      - slide: acer_edf
+        origin: French
+      - slide: hun_alnus_edf
+        origin: Hungarian
+      - slide: Alnus_cf_incana_40x_11_steps_merged_reference
+        origin: Swedish
+      - slide: Alnus_glutinosa_01a_26_layers_40x_ZS028_Al
+        origin: Swedish
+
+  Corylus:
+    origins: [French, Hungarian, Swedish]
+    text_query: >
+      Triporate, spheroidal monad with an isopolar symmetry; each pore
+      is circular, ringed by a thin annulus, and underlain by a
+      prominent oncus, with no vestibule present. The exine is thin
+      and tectate, nearly smooth with only the faintest scabrate
+      sculpturing. In polar view the grain shows a distinctly
+      rounded-triangular outline produced by the bulging pore regions.
+    exemplar_slides:
+      - slide: corylus_edf
+        origin: French
+      - slide: corylus_2_edf
+        origin: French
+      - slide: hun_corylus_edf
+        origin: Hungarian
+      - slide: Corylus_avellana_40x_11_steps_merged_reference
+        origin: Swedish
+      - slide: Corylus_sp_01_40x_ZS013_Co
+        origin: Swedish
+
+  Pinus:
+    origins: [French, Mediterranean, Swedish]
+    text_query: >
+      Bisaccate grain of considerable size, exhibiting a dumb-bell
+      silhouette when viewed polarly, with a compact, lens-shaped
+      corpus bordered by two inflated, thin-walled sacci. The corpus
+      surface is tectate with fine verrucate-gemmate ornamentation
+      imparting a granular texture, while the sacci are psilate and
+      delicate. A single leptoma aperture marks the distal face of
+      the corpus, with no colpi or pores present. Overall outline
+      broadly elliptic and heteropolar.
+    exemplar_slides:
+      - slide: pinus_edf
+        origin: French
+      - slide: pinus_2_edf
+        origin: French
+      - slide: mediterranean_pollen_pinus_reference
+        origin: Mediterranean
+      - slide: Pinus_sp_10_Pinaceae_14_layers_40x_Blue_colou_ZS017_5_mm_circle
+        origin: Swedish
+
+  Plantago:
+    origins: [French, Mediterranean, Swedish]
+    text_query: >
+      Isopolar, spheroidal grain with a round outline and pantoporate
+      configuration — several to numerous circular pores distributed
+      across the entire surface, each bordered by a subtle annulus
+      and occasionally covered by a delicate operculum. No colpi
+      present; aperture membranes bear fine ornamental detail. The
+      tectate exine displays a verrucate-to-gemmate sculpture,
+      producing a gently granular-warty surface texture.
+    exemplar_slides:
+      - slide: plantago_edf
+        origin: French
+      - slide: mediterranean_pollen_plantago_reference
+        origin: Mediterranean
+      - slide: plantago_major_plantaginaceae_14_layers_40x_zs017_5_mm_circle
+        origin: Swedish
+
+  Urtica:
+    origins: [French, Mediterranean, Swedish]
+    text_query: >
+      Triporate spheroidal monad of small size, isopolar in symmetry.
+      Pores are circular, equidistantly arranged, each bordered by a
+      subtle annulus and covered by a thin operculum overlying a low
+      oncus. The exine is thin with a psilate surface.
+    exemplar_slides:
+      - slide: urtica_edf
+        origin: French
+      - slide: mediterranean_pollen_urti_reference
+        origin: Mediterranean
+      - slide: Urtica_dioica_40x_12_layers_03_crowded_ZS015_5_mm_circle
+        origin: Swedish
+
+  Chenopodium:
+    origins: [French, Mediterranean]
+    text_query: >
+      A small, spheroidal grain of isopolar symmetry displaying a
+      pantoporate configuration with many pores distributed across
+      the entire surface, each surrounded by a subtle annulus and
+      sealed by a thin operculum. The tectate wall is ornamented
+      with dense verrucae and scattered gemmae, yielding a rough,
+      granular surface texture. Outline appears perfectly circular
+      in all orientations; no colpi are present.
+    exemplar_slides:
+      - slide: cheno_edf
+        origin: French
+      - slide: mediterranean_pollen_cheno_reference
+        origin: Mediterranean
+
+  Cupressus:
+    origins: [French, Mediterranean]
+    text_query: >
+      Inaperturate, spheroidal grain with a circular polar outline and
+      a thin tectate-psilate wall. Tiny scattered gemmae dot the
+      surface, visible as small dark specks under light microscopy.
+      Desiccation commonly causes the grain to rupture along its
+      equatorial plane, yielding a characteristic crumpled or
+      wedge-shaped appearance.
+    exemplar_slides:
+      - slide: cupressus_edf
+        origin: French
+      - slide: mediterranean_pollen_cupr_reference
+        origin: Mediterranean
+
+  Picea:
+    origins: [French, Swedish]
+    text_query: >
+      Bisaccate, heteropolar monad of considerable size, displaying a
+      prominently oblate habit when viewed polarly. The central corpus
+      is elliptical and bears a single leptoma on its distal surface,
+      with no colpi or pores present. Exine ornamentation on the
+      corpus is tectate with fine verrucae to gemmae, imparting a
+      delicately granular texture, while the paired sacci are psilate
+      and thin-walled. The overall outline appears broadly elliptic,
+      dominated by the two conspicuous air bladders extending
+      laterally from the corpus.
+    exemplar_slides:
+      - slide: picea_edf
+        origin: French
+      - slide: Picea_abies_01_20x_ZS017_Pc
+        origin: Swedish
+
+  Platanus:
+    origins: [French, Mediterranean]
+    text_query: >
+      A tricolpate, spheroidal monad displaying isopolar symmetry,
+      with a finely reticulate exine surface. Three elongate colpi
+      extend from near one pole to the other, their membranes bearing
+      minute ornamentation. In polar view the grain appears circular
+      with a gentle trilobate outline corresponding to the colpus
+      endpoints.
+    exemplar_slides:
+      - slide: platanus_edf
+        origin: French
+      - slide: mediterranean_pollen_platanus_reference
+        origin: Mediterranean
+
+  Quercus:
+    origins: [French, Swedish]
+    text_query: >
+      Oblate-spheroidal, medium-sized monad of isopolar symmetry
+      bearing three elongate colpi that tend to splay open in
+      unacetolyzed material. The exine is thin and tectate with a
+      finely scabrate surface, imparting a delicate roughness to
+      the grain wall. Polar view reveals a circular amb without
+      pronounced lobing.
+    exemplar_slides:
+      - slide: quercus_edf
+        origin: French
+      - slide: Quercus_robur_Fagaceae_14_layers_40x_check_quality_ZS017_5_mm_circle
+        origin: Swedish
+
+  Rumex:
+    origins: [French, Mediterranean]
+    text_query: >
+      Tricolporate to tetracolporate monad, spheroidal in shape and
+      isopolar, displaying three or occasionally four elongated colpi
+      along the equator, each bearing a small circular porus. The
+      exine is thin with a pronounced reticulate sculpture that snaps
+      into sharp focus upon slight adjustment of the focal plane.
+      Polar view presents a rounded, circular amb.
+    exemplar_slides:
+      - slide: rumex_edf
+        origin: French
+      - slide: mediterranean_pollen_rumex_reference
+        origin: Mediterranean
+
+  Salix:
+    origins: [French, Swedish]
+    text_query: >
+      Spheroidal, isopolar monad of small to medium size with a
+      circular polar outline. The aperture system is tricolpate,
+      featuring three elongate equatorial colpi each bordered by a
+      narrow margo. The exine displays a distinct reticulum of low
+      muri forming polygonal lumina that diminish in size toward
+      the colpi.
+    exemplar_slides:
+      - slide: salix_edf
+        origin: French
+      - slide: Salix_sp_10_Salicaceae_14_layers_40x_ZS017_5_mm_circle
+        origin: Swedish
+
+  Ulmus:
+    origins: [French, Swedish]
+    text_query: >
+      Oblate spheroidal monad of moderate size, heteropolar in symmetry,
+      with a circular polar outline. The aperture configuration is
+      stephanoaperturate, comprising four to six equatorially distributed
+      round pores, each bordered by a subtle annulus. Surface
+      ornamentation is verrucate to scabrate, imparting a delicately
+      roughened texture across the exine.
+    exemplar_slides:
+      - slide: ulmus_edf
+        origin: French
+      - slide: Ulmus_glabra_12_layers_01_40x_ZS014_Ulmus_01
+        origin: Swedish

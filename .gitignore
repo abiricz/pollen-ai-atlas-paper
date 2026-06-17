@@ -1,0 +1,20 @@
+# Data and generated outputs are intentionally excluded from the paper-code repo.
+data/
+*.h5
+*.jsonl
+*.log
+*.out
+*.err
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Local environments
+.venv/
+.env
+.env.*
+
+# Large local model/checkpoint directories
+models/
+vllm_logs/
+logs/

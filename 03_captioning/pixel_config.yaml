@@ -1,0 +1,121 @@
+# Copyright 2026 András Biricz. Licensed under the Apache License, Version 2.0.
+
+# Pixel Size Configuration (µm per pixel)
+# =========================================
+#
+# PURPOSE:
+#   Define pixel_um (microns per pixel) for accurate physical measurements.
+#   This value is critical for correct grain size calculations in captions.
+#
+# SOURCES:
+#   - Check WSI metadata: openslide.open_slide(path).properties['openslide.mpp-x']
+#   - Or calculate from objective/camera specs
+#
+# USAGE:
+#   - Script reads this file if --pixel_config is specified
+#   - Falls back to --pixel_um command line argument otherwise
+#   - Falls back to dataset defaults if neither specified
+
+# =============================================================================
+# DATASET DEFAULTS
+# Applied when slide not listed below
+# =============================================================================
+defaults:
+  french: 0.242797        # All French EDF slides (20x, 3DHistech scanner)
+  hungarian: 0.242797     # Default for hun_* slides (same microscope as French)
+  mediterranean: 0.17     # Olympus VS120 @ 40× (NA 0.95) - manufacturer spec from Virtual-Slide-VS120.pdf
+  swedish: 0.243          # Default for Swedish slides (most are effective 20× after processing)
+# =============================================================================
+# PER-SLIDE OVERRIDES
+# Takes precedence over dataset defaults
+# =============================================================================
+slides:
+  # -------------------------------------------------------------------------
+  # HUNGARIAN DATASET
+  # -------------------------------------------------------------------------
+  # Standard Hungarian slides (same microscope as French, 0.242797 µm/pixel)
+  hun_alnus_edf: 0.242797
+  hun_betula_edf: 0.242797
+  hun_corylus_edf: 0.242797
+  
+  # Ambrosia-Iva reference slides (different microscope setup, 40x?)
+  Ambrosia-Iva_reference_10l_1m_Ambrosia_edf: 0.121295
+  Ambrosia-Iva_reference_10l_1m_Iva_edf: 0.121295
+  
+  # -------------------------------------------------------------------------
+  # SWEDISH DATASET
+  # -------------------------------------------------------------------------
+  # VERIFICATION METHOD: Cross-referenced query image sizes against French
+  # equivalents (confirmed 0.242797 µm/pixel @ 20×).
+  # Raw scans are 40× (~0.122 µm/pixel) but some TIFs were processed at 20×.
+  #
+  # RAW METADATA:
+  #   v1 XYZPositions: 0.1221-0.1224 µm/pixel
+  #   v2/v3 XYZPositions: 0.1220-0.1222 µm/pixel  
+  #   v2 .sws+BMP: 0.1232 µm/pixel (FieldWidth/tile_px)
+  #
+  # EFFECTIVE MPP determined by comparing grain sizes to French reference.
+  
+  # 40× slides (verified against French Alnus/Betula/Corylus)
+  # MPP ~0.122-0.130 µm/pixel (use 0.125 as average)
+  Alnus_cf_incana_40x_11_steps_merged_reference: 0.1225
+  Alnus_glutinosa_01a_26_layers_40x_ZS028_Al: 0.1225
+  Betula_cf_pendula_11_layers_40x_merged_reference: 0.1225
+  Betula_cf_pendula_40x_11_steps_merged_reference: 0.1225
+  Betula_sp_01_40x_ZS013_Be: 0.1225
+  Corylus_avellana_40x_11_steps_merged_reference: 0.1225
+  Corylus_sp_01_40x_ZS013_Co: 0.1225
+  
+  # 20× slides (verified against French equivalents)
+  # MPP ~0.22-0.25 µm/pixel (use 0.243 to match French)
+  Ambrosia_artemisifolia_Asteraceae_14_layers_40x_ZS017_5_mm_circle: 0.243
+  Dactylus_glomerata_Poaceae_14_layers_40x_ZS017_5_mm_circle: 0.243
+  Pinus_sp_10_Pinaceae_14_layers_40x_Blue_colou_ZS017_5_mm_circle: 0.243
+  Quercus_robur_Fagaceae_14_layers_40x_check_quality_ZS017_5_mm_circle: 0.243
+  Salix_sp_10_Salicaceae_14_layers_40x_ZS017_5_mm_circle: 0.243
+  Ulmus_glabra_12_layers_01_40x_ZS014_Ulmus_01: 0.243
+  Urtica_dioica_40x_12_layers_03_crowded_ZS015_5_mm_circle: 0.243
+  acer_platanoides_12_layers_40x_zs015_5_mm_circle: 0.243
+  aesculus_hippocustanum_10_layers_40x_zs015_5_mm_circle: 0.243
+  calluna_vulgaris_ericaceae_zs017_5_mm_circle: 0.243
+  plantago_major_plantaginaceae_14_layers_40x_zs017_5_mm_circle: 0.243
+  betula_sp_10_betulaceae_14_layers_40x_blue_colou_zs017_5_mm_circle: 0.243
+  Picea_abies_01_20x_ZS017_Pc: 0.243
+  
+  # -------------------------------------------------------------------------
+  # MEDITERRANEAN DATASET
+  # -------------------------------------------------------------------------
+  # Olympus VS120 microscope with UPLSAPO40× (NA 0.95) objective
+  # Manufacturer spec from Virtual-Slide-VS120.pdf: 40× (NA 0.95) = 0.17 µm/pixel
+  # All Mediterranean slides use uniform 0.17 µm/pixel
+  mediterranean_pollen_causarina_reference: 0.17
+  mediterranean_pollen_cheno_reference: 0.17
+  mediterranean_pollen_cupr_reference: 0.17
+  mediterranean_pollen_olea_reference: 0.17
+  mediterranean_pollen_palmaceae_reference: 0.17
+  mediterranean_pollen_pinus_reference: 0.17
+  mediterranean_pollen_plantago_reference: 0.17
+  mediterranean_pollen_platanus_reference: 0.17
+  mediterranean_pollen_poaceae_reference: 0.17
+  mediterranean_pollen_rumex_reference: 0.17
+  mediterranean_pollen_urti_reference: 0.17
+
+# =============================================================================
+# NOTES
+# =============================================================================
+# French: Uniform 0.242797 µm/pixel across all 49 slides (3DHistech scanner, 20x)
+#
+# Hungarian: 
+#   - hun_* slides: Same microscope as French → 0.242797 µm/pixel
+#   - Ambrosia-Iva slides: Different setup (40x) → 0.121295 µm/pixel
+#
+# Mediterranean: 0.17 µm/pixel (manufacturer specification)
+#   - Olympus VS120 @ 40× (NA 0.95) = 0.17 µm/pixel
+#   - Source: Virtual-Slide-VS120.pdf (manufacturer datasheet)
+#   - See docs/mediterranean_mpp_values.md for discussion
+#
+# Swedish: Mixed effective resolutions due to post-processing
+#   - RAW scans all 40× (~0.122 µm/pixel from XYZPositions.txt)
+#   - EFFECTIVE MPP determined by comparing query image grain sizes to literature:
+#     - 40× effective (0.1225): 7 slides - Alnus (2), Betula (3), Corylus (2)
+#     - 20× effective (0.243): 13 slides - All others

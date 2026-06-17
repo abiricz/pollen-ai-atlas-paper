@@ -1,0 +1,126 @@
+# Copyright 2026 András Biricz. Licensed under the Apache License, Version 2.0.
+
+# =============================================================================
+# SLIDE EXCLUSION LIST FOR PRODUCTION CAPTIONING
+# =============================================================================
+#
+# This file controls which slides are EXCLUDED from production captioning.
+# Edit this file manually to add/remove slides based on quality review.
+#
+# REASONS FOR EXCLUSION:
+#   - missing_anchor: No anchor/species/family files created yet
+#   - bad_quality: Poor image quality or annotation issues
+#   - bad_label: Incorrect species/family label at data creation
+#   - uncertain_taxonomy: Cannot confirm species/family identification
+#   - too_few_grains: Insufficient grains after filtering (< threshold)
+#   - family_only: Only family-level identification available (no species)
+#   - other: See notes field for explanation
+#
+# HOW TO USE:
+#   1. Add slide name under the appropriate dataset
+#   2. Specify reason from the list above
+#   3. Add optional notes for context
+#   4. The production scripts will skip these slides automatically
+#
+# WORKFLOW:
+#   1. Mining (02_mining/) → all slides processed
+#   2. Filtering (03_captioning/filter_candidates.py) → all slides processed
+#   3. Validation (03_captioning/caption_validation.py) → respects this exclusion list
+#   4. Production (03_captioning/caption_production.py) → respects this exclusion list
+#
+# =============================================================================
+
+# Global settings
+settings:
+  min_grains_threshold: 5  # Slides with fewer grains are auto-flagged
+  require_anchor_files: true  # Skip slides without anchor files
+
+# =============================================================================
+# EXCLUSION LISTS BY DATASET
+# =============================================================================
+
+french:
+  # Slides excluded from French dataset (49 total, 46 ready for new captioning)
+  excluded:
+# will be captioned also with Unknown:
+    - slide: ericaceae_edf
+      reason: family_only
+      notes: "No species label available - only family-level Ericaceae identification. 
+              Included through mining + filtering, excluded from VLM captioning."
+    
+    - slide: juncaceae_edf
+      reason: family_only
+      notes: "No species label available - only family-level Juncaceae identification.
+              Included through mining + filtering, excluded from VLM captioning."
+  
+  # Slides already processed at family-level (captions exist, species="Unknown")
+#  family_level_processed:
+#    - slide: fabaceae_edf
+#      species_in_captions: "Unknown"
+#      family_in_captions: "Fabaceae"
+#      grains: 30737
+#      notes: "Processed with family-level identification only. Captions are valid.
+#              Could be refined if species becomes known later."
+  
+hungarian:
+  # Hungarian dataset - ALL READY (5 slides)
+  # All slides have complete anchor files
+  excluded: []
+  # Ready slides:
+  # - Ambrosia-Iva_reference_10l_1m_Ambrosia_edf ✓
+  # - Ambrosia-Iva_reference_10l_1m_Iva_edf ✓
+  # - hun_alnus_edf ✓
+  # - hun_betula_edf ✓
+  # - hun_corylus_edf ✓
+
+mediterranean:
+  # Mediterranean dataset (11 total, 9 ready, 2 excluded)
+  excluded:
+    - slide: mediterranean_pollen_palmaceae_reference
+      reason: family_only
+      notes: "Only family-level (Arecaceae/Palmae) identification available.
+              No species determination possible from slide label.
+              Included through mining + filtering, excluded from VLM captioning."
+    
+    - slide: mediterranean_pollen_poaceae_reference
+      reason: family_only
+      notes: "Only family-level (Poaceae) identification available.
+              No species determination possible from slide label.
+              Included through mining + filtering, excluded from VLM captioning."
+  # Ready slides (9):
+  # - mediterranean_pollen_causarina_reference ✓
+  # - mediterranean_pollen_cheno_reference ✓
+  # - mediterranean_pollen_cupr_reference ✓
+  # - mediterranean_pollen_olea_reference ✓
+  # - mediterranean_pollen_pinus_reference ✓
+  # - mediterranean_pollen_plantago_reference ✓
+  # - mediterranean_pollen_platanus_reference ✓
+  # - mediterranean_pollen_rumex_reference ✓
+  # - mediterranean_pollen_urti_reference ✓
+
+swedish:
+  # Swedish dataset (20 total, 19 ready, 1 excluded)
+  excluded:
+    - slide: betula_sp_10_betulaceae_14_layers_40x_blue_colou_zs017_5_mm_circle
+      reason: missing_anchor
+      notes: "No anchor files created. Low grain count (310 grains)."
+  # Ready slides (19):
+  # - Alnus_cf_incana_40x_11_steps_merged_reference ✓
+  # - Alnus_glutinosa_01a_26_layers_40x_ZS028_Al ✓
+  # - Ambrosia_artemisifolia_Asteraceae_14_layers_40x_ZS017_5_mm_circle ✓
+  # - Betula_cf_pendula_11_layers_40x_merged_reference ✓
+  # - Betula_cf_pendula_40x_11_steps_merged_reference ✓
+  # - Betula_sp_01_40x_ZS013_Be ✓
+  # - Corylus_avellana_40x_11_steps_merged_reference ✓
+  # - Corylus_sp_01_40x_ZS013_Co ✓
+  # - Dactylus_glomerata_Poaceae_14_layers_40x_ZS017_5_mm_circle ✓
+  # - Picea_abies_01_20x_ZS017_Pc ✓
+  # - Pinus_sp_10_Pinaceae_14_layers_40x_Blue_colou_ZS017_5_mm_circle ✓
+  # - Quercus_robur_Fagaceae_14_layers_40x_check_quality_ZS017_5_mm_circle ✓
+  # - Salix_sp_10_Salicaceae_14_layers_40x_ZS017_5_mm_circle ✓
+  # - Ulmus_glabra_12_layers_01_40x_ZS014_Ulmus_01 ✓
+  # - Urtica_dioica_40x_12_layers_03_crowded_ZS015_5_mm_circle ✓
+  # - acer_platanoides_12_layers_40x_zs015_5_mm_circle ✓
+  # - aesculus_hippocustanum_10_layers_40x_zs015_5_mm_circle ✓
+  # - calluna_vulgaris_ericaceae_zs017_5_mm_circle ✓
+  # - plantago_major_plantaginaceae_14_layers_40x_zs017_5_mm_circle ✓

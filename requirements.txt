@@ -1,0 +1,106 @@
+# Copyright 2026 András Biricz. Licensed under the Apache License, Version 2.0.
+
+# Pollen AI Atlas - Python Dependencies
+# =====================================
+# Target: Python 3.10+ (tested release environment: Python 3.12.3)
+# Create venv: python3 -m venv .venv && source .venv/bin/activate
+# Install: pip install -r requirements.txt
+#
+# This file keeps portable lower bounds for public reuse. The manuscript
+# lists the exact release environment versions used for the paper.
+
+# -----------------------------------------------------------------------------
+# Core Deep Learning
+# -----------------------------------------------------------------------------
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0          # Optional, for audio transforms
+
+# -----------------------------------------------------------------------------
+# Vision Models & Timm
+# -----------------------------------------------------------------------------
+timm>=0.9.0                 # PyTorch Image Models (ViT backbones)
+
+# -----------------------------------------------------------------------------
+# Transformers (OWL-ViT for Phase 1)
+# -----------------------------------------------------------------------------
+transformers>=4.30.0        # Hugging Face transformers (OWL-ViT)
+
+# -----------------------------------------------------------------------------
+# Whole Slide Image (WSI) Support
+# -----------------------------------------------------------------------------
+openslide-python>=1.3.0     # OpenSlide bindings for WSI reading
+tiffslide>=2.0.0            # Alternative WSI reader (lighter weight)
+
+# -----------------------------------------------------------------------------
+# Pathology Tools (optional - some features need Python <3.12)
+# -----------------------------------------------------------------------------
+tiatoolbox>=1.5.0           # TIA toolbox (Macenko stain normalization)
+# NOTE: tiatoolbox 1.6.0+ works with Python 3.12 via updated numba dependency.
+# If you encounter numba compatibility issues, use Python 3.11 instead.
+
+# -----------------------------------------------------------------------------
+# Scientific Computing
+# -----------------------------------------------------------------------------
+numpy>=1.24.0
+scipy>=1.10.0
+scikit-image>=0.21.0        # Image processing (morphology ops in mining)
+scikit-learn>=1.2.0         # ML utilities (clustering, metrics)
+pandas>=2.0.0               # Data frames (OWL-ViT annotations)
+PyYAML>=6.0                  # YAML configuration files
+
+# -----------------------------------------------------------------------------
+# Data Storage & I/O
+# -----------------------------------------------------------------------------
+h5py>=3.9.0                 # HDF5 files (mining outputs)
+Pillow>=10.0.0              # Image loading
+
+# -----------------------------------------------------------------------------
+# Progress & Logging
+# -----------------------------------------------------------------------------
+tqdm>=4.65.0                # Progress bars
+requests>=2.31.0            # HTTP checks for model endpoints
+psutil>=5.9.0               # Memory monitoring during filtering
+
+# -----------------------------------------------------------------------------
+# Visualization (optional, for notebooks)
+# -----------------------------------------------------------------------------
+matplotlib>=3.7.0           # Plotting
+seaborn>=0.13.0             # Confusion-matrix plots
+umap-learn>=0.5.0           # Embedding visualization
+adjustText>=1.0.0           # UMAP label placement
+# napari>=0.4.18            # Optional: 3D viewer for WSI inspection
+
+# -----------------------------------------------------------------------------
+# OpenCV (for image processing in OWL-ViT stage)
+# -----------------------------------------------------------------------------
+opencv-python>=4.8.0        # cv2 for image ops
+
+# -----------------------------------------------------------------------------
+# VLM Captioning (Phase 3 - separate GPU requirements)
+# -----------------------------------------------------------------------------
+openai>=1.0.0               # OpenAI-compatible client for vLLM
+sentence-transformers>=2.2.0 # SBERT caption/query embeddings
+# vllm>=0.4.0               # vLLM server (install separately with: pip install vllm)
+
+# -----------------------------------------------------------------------------
+# SAM-2 (Phase 2 Mining - install separately)
+# -----------------------------------------------------------------------------
+# SAM-2 requires separate installation:
+#   pip install git+https://github.com/facebookresearch/sam2.git
+# Checkpoints: https://github.com/facebookresearch/sam2#model-checkpoints
+
+# -----------------------------------------------------------------------------
+# Development & Testing
+# -----------------------------------------------------------------------------
+pytest>=7.0.0               # Testing framework
+ipykernel>=6.25.0           # Jupyter kernel support
+jupyter>=1.0.0              # Notebooks
+
+# -----------------------------------------------------------------------------
+# Documentation
+# -----------------------------------------------------------------------------
+markdown>=3.0.0             # Markdown parsing for PDF generation
+playwright>=1.40.0          # Browser-based PDF rendering
+
+aiohttp>=3.9.0

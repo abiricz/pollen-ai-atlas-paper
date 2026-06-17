@@ -1,0 +1,1562 @@
+# Copyright 2026 András Biricz. Licensed under the Apache License, Version 2.0.
+
+# Pollen Classification Experiment Configuration
+# ================================================
+# This YAML defines fully reproducible experiments for the manuscript.
+# All paths are relative to the repository root.
+#
+# IMPORTANT DESIGN DECISIONS:
+# 1. All patches are resized to 518x518 for ViT input (handles different MPP scales)
+# 2. Frozen backbone (linear probe) is the primary baseline - validates dataset quality
+# 3. ImageNet normalization is default; per-dataset stats available as option
+# 4. Cross-region experiments test generalization across scanner/sample variations
+#
+# Usage:
+#   python train_classifier.py --config experiment_config.yaml --experiment linear_probe_all
+#   python evaluate_classifier.py --config experiment_config.yaml --experiment linear_probe_all
+
+# =============================================================================
+# GLOBAL SETTINGS (inherited by all experiments unless overridden)
+# =============================================================================
+global:
+  # Data paths
+  data_root: "data"
+  splits_dir: "data/04_evaluation/splits"
+  annotations_dir: "04_evaluation/annotations"
+  results_dir: "data/04_evaluation/results"
+  
+  # Backbone checkpoint
+  # Use null for original pretrained LVD weights from timm (recommended for clean evaluation)
+  # The finetuned checkpoint may have seen test data during exploration
+  backbone_checkpoint: null  # null = use pretrained=True from timm
+  
+  # Model architecture
+  backbone_name: "vit_small_patch14_dinov2.lvd142m"
+  img_size: 518  # ViT-Small-LVD input size (all patches resized to this)
+  num_classes: 46  # 45 HITL-validated species + 1 Unknown (from caption_anchors)
+  embedding_dim: 384  # ViT-Small embedding dimension
+  
+  # Training defaults
+  batch_size: 16  # Per-GPU batch under DDP (16 × 8 GPUs = 128 effective global)
+  num_workers: 10  # DDP: 10 per process × 8 GPUs = 80 total (128 cores, 2 TB RAM — plenty of headroom)
+  seed: 42
+  seeds: [41, 42, 43, 44, 45]  # 5 seeds for multi-seed experiments (matches exp1-10)
+  
+  # Device
+  device: "cuda:0"  # DDP will auto-distribute to all GPUs when using --ddp flag
+  # DDP Note: With --ddp, num_workers is per-process. OMP_NUM_THREADS=2 recommended:
+  #   export OMP_NUM_THREADS=2
+  #   ./train_all.sh --ddp --seeds 41,42,43 1-5
+  
+  # Normalization options
+  # - "imagenet": ImageNet defaults (0.485, 0.456, 0.406) / (0.229, 0.224, 0.225)
+  # - "dataset": Compute mean/std from training set (requires first pass)
+  # - "custom": Use custom values specified in experiment
+  normalization_mode: "imagenet"
+  normalize_mean: [0.485, 0.456, 0.406]
+  normalize_std: [0.229, 0.224, 0.225]
+  
+  # Note: No fixed patch_size needed - we extract exact bbox and resize to img_size (518)
+
+# =============================================================================
+# DATASET REGION DEFINITIONS
+# =============================================================================
+# MPP values from 03_captioning/pixel_config.yaml
+# Different scanners = different µm/pixel ratios
+# Solution: Resize all crops to 518×518 → handles scale differences
+# =============================================================================
+regions:
+  all:
+    description: "All captioned slides from all regions (80 slides, 1.5M samples)"
+    datasets: ["french", "hungarian", "mediterranean", "swedish"]
+    
+  french:
+    description: "French dataset (47 slides, ~967K samples)"
+    datasets: ["french"]
+    default_mpp: 0.242797
+    slides_40x: []  # All French slides are 20x effective
+    
+  hungarian:
+    description: "Hungarian dataset (5 slides, ~430K samples)"
+    datasets: ["hungarian"]
+    default_mpp: 0.242797  # hun_* slides
+    slides_40x:  # These use 0.121295 mpp
+      - "Ambrosia-Iva_reference_10l_1m_Ambrosia_edf"
+      - "Ambrosia-Iva_reference_10l_1m_Iva_edf"
+    
+  mediterranean:
+    description: "Mediterranean dataset (9 slides, ~31K samples)"
+    datasets: ["mediterranean"]
+    default_mpp: 0.17  # Olympus VS120 @ 40x
+    slides_40x: []  # All are 40x
+    
+  swedish:
+    description: "Swedish dataset (19 slides, ~83K samples)"
+    datasets: ["swedish"]
+    default_mpp: 0.243  # Most are effective 20x
+    slides_40x:  # These use 0.1225 mpp
+      - "Alnus_cf_incana_40x_11_steps_merged_reference"
+      - "Alnus_glutinosa_01a_26_layers_40x_ZS028_Al"
+      - "Betula_cf_pendula_11_layers_40x_merged_reference"
+      - "Betula_cf_pendula_40x_11_steps_merged_reference"
+      - "Betula_sp_01_40x_ZS013_Be"
+      - "Corylus_avellana_40x_11_steps_merged_reference"
+      - "Corylus_sp_01_40x_ZS013_Co"
+
+# =============================================================================
+# TEST SET DEFINITIONS
+# =============================================================================
+test_sets:
+  ts1_legacy:
+    description: "Legacy test set from previous paper (21 annotated slides, 17 evaluated — 5065 grains, 11 taxa; 4 slides without caption anchors skipped)"
+    path: "04_evaluation/annotations/ts1_legacy"
+    num_slides: 21
+    num_grains: 6723
+    purpose: "Comparison with published results (Appendix)"
+    
+  ts2_expert:
+    description: "Expert-annotated test set (84 slides, 10335 grains, 46 taxa)"
+    path: "04_evaluation/annotations/ts2_expert"
+    num_slides: 84
+    num_grains: 10335
+    purpose: "Main paper results"
+
+# =============================================================================
+# PREPROCESSING OPTIONS
+# =============================================================================
+preprocessing:
+  # PREPROCESSING PIPELINE (applied to images before transforms):
+  # 1. StainNorm (Macenko): Applies optical density decomposition to normalize staining
+  # 2. HistMatch: Simpler alternative - aligns mean/std to reference (lighter weight)
+  # 
+  # Only ONE method is used (stainnorm takes priority if enabled).
+  # After preprocessing, standard torchvision transforms apply:
+  #   Resize → Augmentations → ToTensor → Normalize(mean, std)
+  #
+  # For stainnorm experiments:
+  #   - normalize_mean/std are computed on STAIN-NORMALIZED patches
+  #   - These replace ImageNet defaults for proper distribution matching
+  #   - Run: ./04_evaluation/scripts/data_preparation/compute_stainnorm_reference.sh all
+  # =============================================================================
+  
+  # Macenko stain normalization (requires tiatoolbox)
+  # Decomposes image into H&E stain vectors and normalizes to reference
+  stainnorm:
+    enabled: false
+    reference_path: null  # e.g., "data/04_evaluation/normalization/french_reference.npy"
+    
+  # Histogram matching (mean/variance alignment) - lighter alternative to Macenko
+  # Not used in current experiments (stainnorm preferred)
+  hist_match:
+    enabled: false
+    training_mean: null
+    training_std: null
+    
+  # Scale adaptation (for cross-MPP experiments)
+  # Currently handled by resizing all to 518x518
+  scale_adapt:
+    enabled: false
+    target_mpp: 0.242797  # French (20x) as reference
+
+# =============================================================================
+# EXPERIMENT DEFINITIONS
+# =============================================================================
+# These experiments align with roadmap.md Phase B (Classification Experiments)
+# Priority order: B2 (Option A baseline) → B4 (cross-region) → B3 (caption augmentation)
+# =============================================================================
+experiments:
+  
+  # -------------------------------------------------------------------------
+  # EXPERIMENT 1: Linear Probe Baseline (Option A) — PRIMARY FOR PAPER
+  # -------------------------------------------------------------------------
+  # Roadmap Step B2: Image-only classification with frozen ViT backbone
+  # This is the main baseline demonstrating dataset utility
+  # -------------------------------------------------------------------------
+  linear_probe_all:
+    name: "Option A: Linear Probe (All Regions)"
+    description: |
+      Frozen backbone + linear head trained on 1.27M samples.
+      Primary baseline for the manuscript.
+      Validates dataset quality for downstream classification.
+    
+    # Training configuration
+    training:
+      train_region: "all"
+      epochs: 67  # Calculated for ~21,760 iterations (2x coverage)
+      batch_size: 16  # Per-GPU batch under DDP (16 × 8 GPUs = 128 effective)
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+      optimizer: "adamw"
+      scheduler: "cosine"
+      warmup_epochs: 17  # 0.25 × epochs for 0.5x coverage warmup
+      skip_val_until_epoch: 17  # Skip validation during warmup (save time)
+      multi_gpu: true  # Use all available GPUs with DataParallel
+      
+      # Backbone freezing - LINEAR PROBE = always frozen
+      freeze_backbone: true
+      unfreeze_after_epoch: null
+      
+      # Class balancing
+      class_balancing: "sqrt"  # Loss weights: sqrt, inverse, none
+      balanced_sampling: true  # Per-epoch balanced sampling
+      sampling_method: "sqrt"  # sqrt (minority-based), uniform, none
+      samples_per_epoch: null  # Computed from class distribution
+      
+      # Data augmentation (training only)
+      # Based on 01_initialization/Tif_clustering_embedder_finetuning.ipynb
+      augmentation:
+        random_horizontal_flip: true
+        horizontal_flip_p: 0.5
+        random_vertical_flip: true
+        vertical_flip_p: 0.5
+        random_rotation: 30  # degrees
+        random_grayscale: 0.2  # Removes color for staining robustness
+        color_jitter:
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.2
+          hue: 0.1
+        random_affine:
+          enabled: true
+          degrees: 0
+          translate: [0.1, 0.1]
+          scale: [0.9, 1.1]
+        gaussian_blur:
+          enabled: true
+          kernel_size: [3, 5]
+          sigma: [0.1, 2.0]
+        
+    # Preprocessing (ImageNet defaults for baseline)
+    preprocessing:
+      normalization_mode: "imagenet"
+      stainnorm:
+        enabled: false
+      hist_match:
+        enabled: false
+    
+    # Evaluate on both test sets
+    eval_test_sets: ["ts2_expert", "ts1_legacy"]
+    
+    # Output under the generated data root
+    output_dir: "data/04_evaluation/results/exp01_linear_probe_all"
+    
+  # -------------------------------------------------------------------------
+  # EXPERIMENT 2: Linear Probe - French Only (Cross-Region Source)
+  # -------------------------------------------------------------------------
+  # Roadmap Step B4: Train on French, evaluate cross-region
+  # French has most species (38) and samples (931K)
+  # Overlapping taxa:
+  #   → Hungarian: 4 (Alnus, Ambrosia, Betula, Corylus)
+  #   → Mediterranean: 7 (Chenopodium, Cupressus, Pinus, Plantago, Platanus, Rumex, Urtica)
+  #   → Swedish: 11 (Alnus, Ambrosia, Betula, Corylus, Picea, Pinus, Plantago, Quercus, Salix, Ulmus, Urtica)
+  # -------------------------------------------------------------------------
+  linear_probe_french:
+    name: "Linear Probe (French → Cross-Region)"
+    description: |
+      Train on French region only (46 slides, 931K samples, 38 species).
+      Best coverage for cross-region: 11 overlap with Swedish, 7 with Mediterranean.
+    
+    training:
+      train_region: "french"
+      epochs: 20  # Calculated for ~21,760 iterations (2x coverage)
+      batch_size: 16
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+      optimizer: "adamw"
+      scheduler: "cosine"
+      warmup_epochs: 5  # 0.25 × epochs for 0.5x coverage warmup
+      skip_val_until_epoch: 5
+      freeze_backbone: true
+      unfreeze_after_epoch: null
+      class_balancing: "sqrt"
+      balanced_sampling: true
+      sampling_method: "sqrt"
+      multi_gpu: true
+      augmentation:
+        random_horizontal_flip: true
+        horizontal_flip_p: 0.5
+        random_vertical_flip: true
+        vertical_flip_p: 0.5
+        random_rotation: 30
+        random_grayscale: 0.2
+        color_jitter:
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.2
+          hue: 0.1
+        random_affine:
+          enabled: true
+          degrees: 0
+          translate: [0.1, 0.1]
+          scale: [0.9, 1.1]
+        gaussian_blur:
+          enabled: true
+          kernel_size: [3, 5]
+          sigma: [0.1, 2.0]
+        
+    preprocessing:
+      normalization_mode: "imagenet"
+      stainnorm:
+        enabled: false
+      hist_match:
+        enabled: false
+    
+    # Cross-region targets with overlap counts
+    cross_region_targets: ["hungarian", "mediterranean", "swedish"]
+    cross_region_overlap:
+      hungarian: 4
+      mediterranean: 7
+      swedish: 11
+        
+    eval_test_sets: ["ts2_expert", "ts1_legacy"]
+    output_dir: "data/04_evaluation/results/exp02_linear_probe_french"
+
+  # -------------------------------------------------------------------------
+  # EXPERIMENT 3: Linear Probe - Hungarian Only (Cross-Region Source)
+  # -------------------------------------------------------------------------
+  # Key cross-region experiment for debugging (small, 5 slides, 430K samples)
+  # Overlapping taxa:
+  #   → French: 4 (Alnus, Ambrosia, Betula, Corylus)
+  #   → Swedish: 4 (Alnus, Ambrosia, Betula, Corylus)  
+  #   → Mediterranean: 0 (CANNOT evaluate)
+  # -------------------------------------------------------------------------
+  linear_probe_hungarian:
+    name: "Linear Probe (Hungarian → Cross-Region)"
+    description: |
+      Train on Hungarian (5 slides, 430K samples, 5 species).
+      Evaluate cross-region on French and Swedish (4 overlapping taxa).
+      Mediterranean has 0 overlap - not evaluated.
+    
+    training:
+      train_region: "hungarian"
+      epochs: 18  # Calculated for ~21,760 iterations (2x coverage)
+      batch_size: 16
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+      optimizer: "adamw"
+      scheduler: "cosine"
+      warmup_epochs: 5  # 0.25 × epochs for 0.5x coverage warmup
+      skip_val_until_epoch: 5
+      freeze_backbone: true
+      unfreeze_after_epoch: null
+      class_balancing: "sqrt"
+      balanced_sampling: true
+      sampling_method: "sqrt"
+      multi_gpu: true
+      augmentation:
+        random_horizontal_flip: true
+        horizontal_flip_p: 0.5
+        random_vertical_flip: true
+        vertical_flip_p: 0.5
+        random_rotation: 30
+        random_grayscale: 0.2
+        color_jitter:
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.2
+          hue: 0.1
+        random_affine:
+          enabled: true
+          degrees: 0
+          translate: [0.1, 0.1]
+          scale: [0.9, 1.1]
+        gaussian_blur:
+          enabled: true
+          kernel_size: [3, 5]
+          sigma: [0.1, 2.0]
+        
+    preprocessing:
+      normalization_mode: "imagenet"
+      stainnorm:
+        enabled: false
+      hist_match:
+        enabled: false
+    
+    # Cross-region evaluation targets (overlapping taxa only)
+    cross_region_targets: ["french", "swedish"]  # Mediterranean has 0 overlap
+    
+    eval_test_sets: ["ts2_expert", "ts1_legacy"]
+    output_dir: "data/04_evaluation/results/exp03_linear_probe_hungarian"
+
+  # -------------------------------------------------------------------------
+  # EXPERIMENT 4: Linear Probe - Swedish Only (Cross-Region Source)
+  # -------------------------------------------------------------------------
+  # Swedish has good species diversity (15 species) and 40x scans
+  # Overlapping taxa:
+  #   → French: 11 (Alnus, Ambrosia, Betula, Corylus, Picea, Pinus, Plantago, Quercus, Salix, Ulmus, Urtica)
+  #   → Hungarian: 4 (Alnus, Ambrosia, Betula, Corylus)
+  #   → Mediterranean: 3 (Pinus, Plantago, Urtica)
+  # -------------------------------------------------------------------------
+  linear_probe_swedish:
+    name: "Linear Probe (Swedish → Cross-Region)"
+    description: |
+      Train on Swedish region (19 slides, 79K samples, 15 species).
+      Tests 40x scanner generalization to 20x datasets.
+    
+    training:
+      train_region: "swedish"
+      epochs: 750  # Calculated for ~21,760 iterations (2x coverage, small dataset)
+      batch_size: 16
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+      optimizer: "adamw"
+      scheduler: "cosine"
+      warmup_epochs: 188  # 0.25 × epochs for 0.5x coverage warmup
+      skip_val_until_epoch: 188
+      freeze_backbone: true
+      unfreeze_after_epoch: null
+      class_balancing: "sqrt"
+      balanced_sampling: true
+      sampling_method: "sqrt"
+      multi_gpu: true
+      augmentation:
+        random_horizontal_flip: true
+        horizontal_flip_p: 0.5
+        random_vertical_flip: true
+        vertical_flip_p: 0.5
+        random_rotation: 30
+        random_grayscale: 0.2
+        color_jitter:
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.2
+          hue: 0.1
+        random_affine:
+          enabled: true
+          degrees: 0
+          translate: [0.1, 0.1]
+          scale: [0.9, 1.1]
+        gaussian_blur:
+          enabled: true
+          kernel_size: [3, 5]
+          sigma: [0.1, 2.0]
+        
+    preprocessing:
+      normalization_mode: "imagenet"
+      stainnorm:
+        enabled: false
+      hist_match:
+        enabled: false
+    
+    cross_region_targets: ["french", "hungarian", "mediterranean"]
+    cross_region_overlap:
+      french: 11
+      hungarian: 4
+      mediterranean: 3
+        
+    eval_test_sets: ["ts2_expert", "ts1_legacy"]
+    output_dir: "data/04_evaluation/results/exp04_linear_probe_swedish"
+
+  # -------------------------------------------------------------------------
+  # EXPERIMENT 5: Linear Probe - Mediterranean Only (Cross-Region Source)
+  # -------------------------------------------------------------------------
+  # Mediterranean is smallest (31K samples) but has unique scanner (Olympus VS120)
+  # Overlapping taxa:
+  #   → French: 7 (Chenopodium, Cupressus, Pinus, Plantago, Platanus, Rumex, Urtica)
+  #   → Swedish: 3 (Pinus, Plantago, Urtica)
+  #   → Hungarian: 0 (NO OVERLAP - cannot evaluate)
+  # -------------------------------------------------------------------------
+  linear_probe_mediterranean:
+    name: "Linear Probe (Mediterranean → Cross-Region)"
+    description: |
+      Train on Mediterranean region (9 slides, 29K samples, 9 species).
+      Tests Olympus VS120 scanner generalization.
+    
+    training:
+      train_region: "mediterranean"
+      epochs: 298  # Calculated for ~21,760 iterations (2x coverage, small dataset)
+      batch_size: 16  # Per-GPU batch under DDP (16 × 8 GPUs = 128 effective)
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+      optimizer: "adamw"
+      scheduler: "cosine"
+      warmup_epochs: 75  # 0.25 × epochs for 0.5x coverage warmup
+      skip_val_until_epoch: 75
+      freeze_backbone: true
+      unfreeze_after_epoch: null
+      class_balancing: "sqrt"
+      balanced_sampling: true
+      sampling_method: "sqrt"
+      multi_gpu: true  # DDP handles small datasets fine
+      augmentation:
+        random_horizontal_flip: true
+        horizontal_flip_p: 0.5
+        random_vertical_flip: true
+        vertical_flip_p: 0.5
+        random_rotation: 30
+        random_grayscale: 0.2
+        color_jitter:
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.2
+          hue: 0.1
+        random_affine:
+          enabled: true
+          degrees: 0
+          translate: [0.1, 0.1]
+          scale: [0.9, 1.1]
+        gaussian_blur:
+          enabled: true
+          kernel_size: [3, 5]
+          sigma: [0.1, 2.0]
+        
+    preprocessing:
+      normalization_mode: "imagenet"
+      stainnorm:
+        enabled: false
+      hist_match:
+        enabled: false
+    
+    cross_region_targets: ["french", "swedish"]  # Hungarian has 0 overlap
+    cross_region_overlap:
+      french: 7
+      swedish: 3
+        
+    eval_test_sets: ["ts2_expert", "ts1_legacy"]
+    output_dir: "data/04_evaluation/results/exp05_linear_probe_mediterranean"
+
+  # ==========================================================================
+  # STAIN NORMALIZATION EXPERIMENTS (6-10)
+  # ==========================================================================
+  # These experiments apply Macenko stain normalization to reduce scanner/staining
+  # variability. Reference images and normalization stats computed by:
+  #   python compute_stainnorm_reference.py --region {french|hungarian|swedish|mediterranean|all}
+  #
+  # For each region:
+  #   - reference: data/04_evaluation/normalization/{region}_reference.npy
+  #   - stats: data/04_evaluation/normalization/{region}_stainnorm_stats.json
+  # ==========================================================================
+  
+  # -------------------------------------------------------------------------
+  # EXPERIMENT 6: Stainnorm - French (largest dataset, cross-region source)
+  # -------------------------------------------------------------------------
+  linear_probe_french_stainnorm:
+    name: "Linear Probe (French) + Stain Normalization"
+    description: |
+      French with Macenko stain normalization using French-computed reference.
+      Stats: mean=[0.631, 0.421, 0.598], std=[0.154, 0.220, 0.169]
+    
+    training:
+      train_region: "french"
+      epochs: 20  # Calculated for ~21,760 iterations (2x coverage)
+      batch_size: 16
+      num_workers: 12  # Reduced from 16 — Macenko stainnorm is RAM-heavy per worker
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+      optimizer: "adamw"
+      scheduler: "cosine"
+      warmup_epochs: 5  # 0.25 × epochs for 0.5x coverage warmup
+      skip_val_until_epoch: 5
+      freeze_backbone: true
+      unfreeze_after_epoch: null
+      class_balancing: "sqrt"
+      balanced_sampling: true
+      sampling_method: "sqrt"
+      multi_gpu: true
+      augmentation:
+        random_horizontal_flip: true
+        horizontal_flip_p: 0.5
+        random_vertical_flip: true
+        vertical_flip_p: 0.5
+        random_rotation: 30
+        random_grayscale: 0.2
+        color_jitter:
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.2
+          hue: 0.1
+        random_affine:
+          enabled: true
+          degrees: 0
+          translate: [0.1, 0.1]
+          scale: [0.9, 1.1]
+        gaussian_blur:
+          enabled: true
+          kernel_size: [3, 5]
+          sigma: [0.1, 2.0]
+        
+    preprocessing:
+      normalization_mode: "custom"
+      normalize_mean: [0.6313, 0.4207, 0.5980]
+      normalize_std: [0.1540, 0.2198, 0.1686]
+      stainnorm:
+        enabled: true
+        reference_path: "data/04_evaluation/normalization/french_reference.npy"
+      hist_match:
+        enabled: false
+        
+    cross_region_targets: ["hungarian", "swedish", "mediterranean"]
+    eval_test_sets: ["ts2_expert", "ts1_legacy"]
+    output_dir: "data/04_evaluation/results/exp06_linear_probe_french_stainnorm"
+
+  # -------------------------------------------------------------------------
+  # EXPERIMENT 7: Stainnorm - Hungarian
+  # -------------------------------------------------------------------------
+  linear_probe_hungarian_stainnorm:
+    name: "Linear Probe (Hungarian) + Stain Normalization"
+    description: |
+      Hungarian with Macenko stain normalization.
+      Stats: mean=[0.668, 0.494, 0.614], std=[0.145, 0.203, 0.168]
+    
+    training:
+      train_region: "hungarian"
+      epochs: 18  # Calculated for ~21,760 iterations (2x coverage)
+      batch_size: 16
+      num_workers: 12  # Reduced — Macenko stainnorm is RAM-heavy per worker
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+      optimizer: "adamw"
+      scheduler: "cosine"
+      warmup_epochs: 5  # 0.25 × epochs for 0.5x coverage warmup
+      skip_val_until_epoch: 5
+      freeze_backbone: true
+      unfreeze_after_epoch: null
+      class_balancing: "sqrt"
+      balanced_sampling: true
+      sampling_method: "sqrt"
+      multi_gpu: true
+      augmentation:
+        random_horizontal_flip: true
+        horizontal_flip_p: 0.5
+        random_vertical_flip: true
+        vertical_flip_p: 0.5
+        random_rotation: 30
+        random_grayscale: 0.2
+        color_jitter:
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.2
+          hue: 0.1
+        random_affine:
+          enabled: true
+          degrees: 0
+          translate: [0.1, 0.1]
+          scale: [0.9, 1.1]
+        gaussian_blur:
+          enabled: true
+          kernel_size: [3, 5]
+          sigma: [0.1, 2.0]
+        
+    preprocessing:
+      normalization_mode: "custom"
+      normalize_mean: [0.6684, 0.4943, 0.6141]
+      normalize_std: [0.1453, 0.2025, 0.1683]
+      stainnorm:
+        enabled: true
+        reference_path: "data/04_evaluation/normalization/hungarian_reference.npy"
+      hist_match:
+        enabled: false
+        
+    cross_region_targets: ["french", "swedish"]
+    eval_test_sets: ["ts2_expert", "ts1_legacy"]
+    output_dir: "data/04_evaluation/results/exp07_linear_probe_hungarian_stainnorm"
+
+  # -------------------------------------------------------------------------
+  # EXPERIMENT 8: Stainnorm - Swedish
+  # -------------------------------------------------------------------------
+  linear_probe_swedish_stainnorm:
+    name: "Linear Probe (Swedish) + Stain Normalization"
+    description: |
+      Swedish with Macenko stain normalization.
+      Stats: mean=[0.802, 0.599, 0.708], std=[0.125, 0.222, 0.173]
+    
+    training:
+      train_region: "swedish"
+      epochs: 750  # Calculated for ~21,760 iterations (2x coverage, small dataset)
+      batch_size: 16
+      num_workers: 12  # Reduced — Macenko stainnorm is RAM-heavy per worker
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+      optimizer: "adamw"
+      scheduler: "cosine"
+      warmup_epochs: 188  # 0.25 × epochs for 0.5x coverage warmup
+      skip_val_until_epoch: 188
+      freeze_backbone: true
+      unfreeze_after_epoch: null
+      class_balancing: "sqrt"
+      balanced_sampling: true
+      sampling_method: "sqrt"
+      multi_gpu: true
+      augmentation:
+        random_horizontal_flip: true
+        horizontal_flip_p: 0.5
+        random_vertical_flip: true
+        vertical_flip_p: 0.5
+        random_rotation: 30
+        random_grayscale: 0.2
+        color_jitter:
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.2
+          hue: 0.1
+        random_affine:
+          enabled: true
+          degrees: 0
+          translate: [0.1, 0.1]
+          scale: [0.9, 1.1]
+        gaussian_blur:
+          enabled: true
+          kernel_size: [3, 5]
+          sigma: [0.1, 2.0]
+        
+    preprocessing:
+      normalization_mode: "custom"
+      normalize_mean: [0.8015, 0.5995, 0.7084]
+      normalize_std: [0.1248, 0.2221, 0.1734]
+      stainnorm:
+        enabled: true
+        reference_path: "data/04_evaluation/normalization/swedish_reference.npy"
+      hist_match:
+        enabled: false
+        
+    cross_region_targets: ["french", "hungarian", "mediterranean"]
+    eval_test_sets: ["ts2_expert", "ts1_legacy"]
+    output_dir: "data/04_evaluation/results/exp08_linear_probe_swedish_stainnorm"
+
+  # -------------------------------------------------------------------------
+  # EXPERIMENT 9: Stainnorm - Mediterranean
+  # -------------------------------------------------------------------------
+  linear_probe_mediterranean_stainnorm:
+    name: "Linear Probe (Mediterranean) + Stain Normalization"
+    description: |
+      Mediterranean with Macenko stain normalization.
+      Stats: mean=[0.867, 0.824, 0.856], std=[0.036, 0.045, 0.038]
+    
+    training:
+      train_region: "mediterranean"
+      epochs: 298  # Calculated for ~21,760 iterations (2x coverage, small dataset)
+      batch_size: 16  # Per-GPU batch under DDP (16 × 8 GPUs = 128 effective)
+      num_workers: 12  # Reduced — Macenko stainnorm is RAM-heavy per worker
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+      optimizer: "adamw"
+      scheduler: "cosine"
+      warmup_epochs: 75  # 0.25 × epochs for 0.5x coverage warmup
+      skip_val_until_epoch: 75
+      freeze_backbone: true
+      unfreeze_after_epoch: null
+      class_balancing: "sqrt"
+      balanced_sampling: true
+      sampling_method: "sqrt"
+      multi_gpu: true  # DDP handles small datasets fine
+      augmentation:
+        random_horizontal_flip: true
+        horizontal_flip_p: 0.5
+        random_vertical_flip: true
+        vertical_flip_p: 0.5
+        random_rotation: 30
+        random_grayscale: 0.2
+        color_jitter:
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.2
+          hue: 0.1
+        random_affine:
+          enabled: true
+          degrees: 0
+          translate: [0.1, 0.1]
+          scale: [0.9, 1.1]
+        gaussian_blur:
+          enabled: true
+          kernel_size: [3, 5]
+          sigma: [0.1, 2.0]
+        
+    preprocessing:
+      normalization_mode: "custom"
+      normalize_mean: [0.8672, 0.8240, 0.8555]
+      normalize_std: [0.0355, 0.0454, 0.0380]
+      stainnorm:
+        enabled: true
+        reference_path: "data/04_evaluation/normalization/mediterranean_reference.npy"
+      hist_match:
+        enabled: false
+        
+    cross_region_targets: ["french", "swedish"]
+    eval_test_sets: ["ts2_expert", "ts1_legacy"]
+    output_dir: "data/04_evaluation/results/exp09_linear_probe_mediterranean_stainnorm"
+
+  # -------------------------------------------------------------------------
+  # EXPERIMENT 10: Stainnorm - All (unified reference from all regions)
+  # -------------------------------------------------------------------------
+  linear_probe_all_stainnorm:
+    name: "Linear Probe (All) + Stain Normalization"
+    description: |
+      All regions with Macenko stainnorm using unified reference.
+      Stats: mean=[0.650, 0.455, 0.613], std=[0.151, 0.215, 0.168]
+    
+    training:
+      train_region: "all"
+      epochs: 67  # Calculated for ~21,760 iterations (2x coverage)
+      batch_size: 16
+      num_workers: 12  # Reduced — Macenko stainnorm is RAM-heavy per worker
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+      optimizer: "adamw"
+      scheduler: "cosine"
+      warmup_epochs: 17  # 0.25 × epochs for 0.5x coverage warmup
+      skip_val_until_epoch: 17
+      freeze_backbone: true
+      unfreeze_after_epoch: null
+      class_balancing: "sqrt"
+      balanced_sampling: true
+      sampling_method: "sqrt"
+      multi_gpu: true
+      augmentation:
+        random_horizontal_flip: true
+        horizontal_flip_p: 0.5
+        random_vertical_flip: true
+        vertical_flip_p: 0.5
+        random_rotation: 30
+        random_grayscale: 0.2
+        color_jitter:
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.2
+          hue: 0.1
+        random_affine:
+          enabled: true
+          degrees: 0
+          translate: [0.1, 0.1]
+          scale: [0.9, 1.1]
+        gaussian_blur:
+          enabled: true
+          kernel_size: [3, 5]
+          sigma: [0.1, 2.0]
+        
+    preprocessing:
+      normalization_mode: "custom"
+      normalize_mean: [0.6502, 0.4553, 0.6130]
+      normalize_std: [0.1514, 0.2146, 0.1680]
+      stainnorm:
+        enabled: true
+        reference_path: "data/04_evaluation/normalization/all_reference.npy"
+      hist_match:
+        enabled: false
+        
+    eval_test_sets: ["ts2_expert", "ts1_legacy"]
+    output_dir: "data/04_evaluation/results/exp10_linear_probe_all_stainnorm"
+
+  # =========================================================================
+  # EXPERIMENTS 11-15: LUPI (Option C) — Caption-Augmented Training
+  # =========================================================================
+  # Learning Using Privileged Information:
+  #   Training:  [img_embed(384) ; sbert_embed(384)] → Linear(768→46)
+  #   Testing:   [img_embed(384) ; zeros(384)]       → Linear(768→46)
+  # Caption embeddings pre-computed via embed_captions.py (SBERT all-MiniLM-L6-v2)
+  # =========================================================================
+
+  # -------------------------------------------------------------------------
+  # EXPERIMENT 11: LUPI All Regions (primary Option C baseline)
+  # -------------------------------------------------------------------------
+  lupi_all:
+    name: "Option C: LUPI (All Regions)"
+    description: |
+      LUPI: Train with image + VLM caption, test with image only.
+      Demonstrates caption utility as privileged information.
+      Same backbone, transforms, and class balancing as Exp1 (Option A).
+    
+    training:
+      train_region: "all"
+      epochs: 67
+      batch_size: 16  # Per-GPU batch under DDP (16 × 8 GPUs = 128 effective)
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+      optimizer: "adamw"
+      scheduler: "cosine"
+      warmup_epochs: 17  # 0.25 × epochs for 0.5x coverage warmup
+      skip_val_until_epoch: 17  # Skip validation during warmup (save time)
+      multi_gpu: true
+      freeze_backbone: true
+      unfreeze_after_epoch: null
+      class_balancing: "sqrt"
+      balanced_sampling: true
+      sampling_method: "sqrt"
+      samples_per_epoch: null
+      augmentation:
+        random_horizontal_flip: true
+        horizontal_flip_p: 0.5
+        random_vertical_flip: true
+        vertical_flip_p: 0.5
+        random_rotation: 30
+        random_grayscale: 0.2
+        color_jitter:
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.2
+          hue: 0.1
+        random_affine:
+          enabled: true
+          degrees: 0
+          translate: [0.1, 0.1]
+          scale: [0.9, 1.1]
+        gaussian_blur:
+          enabled: true
+          kernel_size: [3, 5]
+          sigma: [0.1, 2.0]
+    
+    # LUPI-specific settings
+    lupi:
+      caption_model: "gemma4-bf16"  # Which VLM captions to use
+      text_embed_dim: 384  # SBERT all-MiniLM-L6-v2 dimension
+      fusion_method: "concat"  # [img ; text] concatenation
+      caption_dropout: 0.3  # 30% of training samples get zero text embedding
+    
+    preprocessing:
+      normalization_mode: "imagenet"
+      stainnorm:
+        enabled: false
+      hist_match:
+        enabled: false
+    
+    eval_test_sets: ["ts2_expert", "ts1_legacy"]
+    output_dir: "data/04_evaluation/results/exp11_lupi_all"
+
+  # -------------------------------------------------------------------------
+  # EXPERIMENT 12: LUPI French (cross-region source)
+  # -------------------------------------------------------------------------
+  lupi_french:
+    name: "Option C: LUPI (French → Cross-Region)"
+    description: |
+      LUPI trained on French region only. Cross-region evaluation target.
+    
+    training:
+      train_region: "french"
+      epochs: 20
+      batch_size: 16  # Per-GPU batch under DDP (16 × 8 GPUs = 128 effective)
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+      optimizer: "adamw"
+      scheduler: "cosine"
+      warmup_epochs: 5
+      skip_val_until_epoch: 5
+      freeze_backbone: true
+      unfreeze_after_epoch: null
+      class_balancing: "sqrt"
+      balanced_sampling: true
+      sampling_method: "sqrt"
+      multi_gpu: true
+      augmentation:
+        random_horizontal_flip: true
+        horizontal_flip_p: 0.5
+        random_vertical_flip: true
+        vertical_flip_p: 0.5
+        random_rotation: 30
+        random_grayscale: 0.2
+        color_jitter:
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.2
+          hue: 0.1
+        random_affine:
+          enabled: true
+          degrees: 0
+          translate: [0.1, 0.1]
+          scale: [0.9, 1.1]
+        gaussian_blur:
+          enabled: true
+          kernel_size: [3, 5]
+          sigma: [0.1, 2.0]
+    
+    lupi:
+      caption_model: "gemma4-bf16"
+      text_embed_dim: 384
+      fusion_method: "concat"
+      caption_dropout: 0.3
+    
+    preprocessing:
+      normalization_mode: "imagenet"
+      stainnorm:
+        enabled: false
+      hist_match:
+        enabled: false
+    
+    cross_region_targets: ["hungarian", "mediterranean", "swedish"]
+    cross_region_overlap:
+      hungarian: 4
+      mediterranean: 7
+      swedish: 11
+    eval_test_sets: ["ts2_expert", "ts1_legacy"]
+    output_dir: "data/04_evaluation/results/exp12_lupi_french"
+
+  # -------------------------------------------------------------------------
+  # EXPERIMENT 13: LUPI Hungarian
+  # -------------------------------------------------------------------------
+  lupi_hungarian:
+    name: "Option C: LUPI (Hungarian)"
+    description: |
+      LUPI trained on Hungarian region (5 slides, 5 species).
+      Matches Exp3 training budget exactly.
+    
+    training:
+      train_region: "hungarian"
+      epochs: 18  # Match Exp3: ~21,760 iterations (2x coverage)
+      batch_size: 16  # Per-GPU batch under DDP (16 × 8 GPUs = 128 effective)
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+      optimizer: "adamw"
+      scheduler: "cosine"
+      warmup_epochs: 5  # Match Exp3
+      skip_val_until_epoch: 5  # Match Exp3
+      freeze_backbone: true
+      unfreeze_after_epoch: null
+      class_balancing: "sqrt"
+      balanced_sampling: true
+      sampling_method: "sqrt"
+      multi_gpu: true
+      augmentation:
+        random_horizontal_flip: true
+        horizontal_flip_p: 0.5
+        random_vertical_flip: true
+        vertical_flip_p: 0.5
+        random_rotation: 30
+        random_grayscale: 0.2
+        color_jitter:
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.2
+          hue: 0.1
+        random_affine:
+          enabled: true
+          degrees: 0
+          translate: [0.1, 0.1]
+          scale: [0.9, 1.1]
+        gaussian_blur:
+          enabled: true
+          kernel_size: [3, 5]
+          sigma: [0.1, 2.0]
+    
+    lupi:
+      caption_model: "gemma4-bf16"
+      text_embed_dim: 384
+      fusion_method: "concat"
+      caption_dropout: 0.3
+    
+    preprocessing:
+      normalization_mode: "imagenet"
+      stainnorm:
+        enabled: false
+      hist_match:
+        enabled: false
+    
+    cross_region_targets: ["french", "swedish"]
+    eval_test_sets: ["ts2_expert", "ts1_legacy"]
+    output_dir: "data/04_evaluation/results/exp13_lupi_hungarian"
+
+  # -------------------------------------------------------------------------
+  # EXPERIMENT 14: LUPI Swedish
+  # -------------------------------------------------------------------------
+  lupi_swedish:
+    name: "Option C: LUPI (Swedish)"
+    description: |
+      LUPI trained on Swedish region (19 slides, 15 species).
+      Matches Exp4 training budget exactly.
+    
+    training:
+      train_region: "swedish"
+      epochs: 750  # Match Exp4: ~21,760 iterations (2x coverage, small dataset)
+      batch_size: 16  # Per-GPU batch under DDP (16 × 8 GPUs = 128 effective)
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+      optimizer: "adamw"
+      scheduler: "cosine"
+      warmup_epochs: 188  # Match Exp4: 0.25 × epochs
+      skip_val_until_epoch: 188  # Match Exp4
+      freeze_backbone: true
+      unfreeze_after_epoch: null
+      class_balancing: "sqrt"
+      balanced_sampling: true
+      sampling_method: "sqrt"
+      multi_gpu: true
+      augmentation:
+        random_horizontal_flip: true
+        horizontal_flip_p: 0.5
+        random_vertical_flip: true
+        vertical_flip_p: 0.5
+        random_rotation: 30
+        random_grayscale: 0.2
+        color_jitter:
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.2
+          hue: 0.1
+        random_affine:
+          enabled: true
+          degrees: 0
+          translate: [0.1, 0.1]
+          scale: [0.9, 1.1]
+        gaussian_blur:
+          enabled: true
+          kernel_size: [3, 5]
+          sigma: [0.1, 2.0]
+    
+    lupi:
+      caption_model: "gemma4-bf16"
+      text_embed_dim: 384
+      fusion_method: "concat"
+      caption_dropout: 0.3
+    
+    preprocessing:
+      normalization_mode: "imagenet"
+      stainnorm:
+        enabled: false
+      hist_match:
+        enabled: false
+    
+    cross_region_targets: ["french", "hungarian", "mediterranean"]
+    cross_region_overlap:
+      french: 11
+      hungarian: 4
+      mediterranean: 3
+    eval_test_sets: ["ts2_expert", "ts1_legacy"]
+    output_dir: "data/04_evaluation/results/exp14_lupi_swedish"
+
+  # -------------------------------------------------------------------------
+  # EXPERIMENT 15: LUPI Mediterranean
+  # -------------------------------------------------------------------------
+  lupi_mediterranean:
+    name: "Option C: LUPI (Mediterranean)"
+    description: |
+      LUPI trained on Mediterranean region (9 slides, ~31K samples).
+      Matches Exp5 training budget exactly.
+    
+    training:
+      train_region: "mediterranean"
+      epochs: 298  # Match Exp5: ~21,760 iterations (2x coverage, small dataset)
+      batch_size: 16  # Per-GPU batch under DDP (16 × 8 GPUs = 128 effective)
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+      optimizer: "adamw"
+      scheduler: "cosine"
+      warmup_epochs: 75  # Match Exp5: 0.25 × epochs
+      skip_val_until_epoch: 75  # Match Exp5
+      freeze_backbone: true
+      unfreeze_after_epoch: null
+      class_balancing: "sqrt"
+      balanced_sampling: true
+      sampling_method: "sqrt"
+      multi_gpu: true  # DDP handles small datasets fine
+      augmentation:
+        random_horizontal_flip: true
+        horizontal_flip_p: 0.5
+        random_vertical_flip: true
+        vertical_flip_p: 0.5
+        random_rotation: 30
+        random_grayscale: 0.2
+        color_jitter:
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.2
+          hue: 0.1
+        random_affine:
+          enabled: true
+          degrees: 0
+          translate: [0.1, 0.1]
+          scale: [0.9, 1.1]
+        gaussian_blur:
+          enabled: true
+          kernel_size: [3, 5]
+          sigma: [0.1, 2.0]
+    
+    lupi:
+      caption_model: "gemma4-bf16"
+      text_embed_dim: 384
+      fusion_method: "concat"
+      caption_dropout: 0.3
+    
+    preprocessing:
+      normalization_mode: "imagenet"
+      stainnorm:
+        enabled: false
+      hist_match:
+        enabled: false
+    
+    cross_region_targets: ["french", "swedish"]
+    cross_region_overlap:
+      french: 7
+      swedish: 3
+    eval_test_sets: ["ts2_expert", "ts1_legacy"]
+    output_dir: "data/04_evaluation/results/exp15_lupi_mediterranean"
+
+  # =========================================================================
+  # EXPERIMENTS 16+: DISTILLATION (Option D) — Teacher→Student KD
+  # =========================================================================
+  # Knowledge Distillation with Privileged Information:
+  #   Stage 1 (Teacher):  [img_embed(384) ; sbert_embed(384)] → Linear(768→46)  (same as Option C)
+  #   Stage 2 (Student):  img_embed(384) → Linear(384→46)  (same as Option A)
+  #     Loss = (1-α) × CE(hard) + α × T² × KL(teacher_soft, student_soft)
+  #
+  # The student is architecturally IDENTICAL to Option A.
+  # Evaluation uses Option A's evaluate_classifier.py directly.
+  # =========================================================================
+
+  # -------------------------------------------------------------------------
+  # EXPERIMENT 16: Distillation All Regions (primary Option D baseline)
+  # -------------------------------------------------------------------------
+  distill_all:
+    name: "Option D: Distillation (All Regions)"
+    description: |
+      Two-stage teacher→student distillation.
+      Stage 1: Teacher trained on image+caption (same as Exp11/Option C).
+      Stage 2: Student trained on image-only with KD from teacher soft targets.
+      Student is identical to Option A — evaluate with same pipeline.
+      Demonstrates proper use of captions as privileged information via KD.
+
+    training:
+      train_region: "all"
+      epochs: 67  # Same as Exp1/Exp11
+      batch_size: 16  # Per-GPU batch under DDP (16 × 8 GPUs = 128 effective)
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+      optimizer: "adamw"
+      scheduler: "cosine"
+      warmup_epochs: 17
+      skip_val_until_epoch: 17
+      multi_gpu: true
+      freeze_backbone: true
+      unfreeze_after_epoch: null
+      class_balancing: "sqrt"
+      balanced_sampling: true
+      sampling_method: "sqrt"
+      samples_per_epoch: null
+      augmentation:
+        random_horizontal_flip: true
+        horizontal_flip_p: 0.5
+        random_vertical_flip: true
+        vertical_flip_p: 0.5
+        random_rotation: 30
+        random_grayscale: 0.2
+        color_jitter:
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.2
+          hue: 0.1
+        random_affine:
+          enabled: true
+          degrees: 0
+          translate: [0.1, 0.1]
+          scale: [0.9, 1.1]
+        gaussian_blur:
+          enabled: true
+          kernel_size: [3, 5]
+          sigma: [0.1, 2.0]
+
+    # Distillation-specific settings
+    distillation:
+      caption_model: "gemma4-bf16"      # Which VLM captions (matches Exp11)
+      text_embed_dim: 384             # SBERT all-MiniLM-L6-v2 dimension
+      caption_dropout: 0.3            # Teacher training caption dropout (matches Exp11)
+      temperature: 3.0                # KD temperature (Hinton et al. default range 2-4)
+      alpha: 0.5                      # KD loss weight: (1-α)×CE + α×T²×KL
+      teacher_epochs: null            # null = same as training.epochs
+      student_epochs: null            # null = same as training.epochs
+
+    preprocessing:
+      normalization_mode: "imagenet"
+      stainnorm:
+        enabled: false
+      hist_match:
+        enabled: false
+
+    eval_test_sets: ["ts2_expert", "ts1_legacy"]
+    output_dir: "data/04_evaluation/results/exp16_distill_all"
+
+  # -------------------------------------------------------------------------
+  # EXPERIMENT 17: Distillation French (cross-region source)
+  # -------------------------------------------------------------------------
+  distill_french:
+    name: "Option D: Distillation (French → Cross-Region)"
+    description: |
+      Distillation trained on French region only.
+      Teacher: Option C (exp12_lupi_french) teacher checkpoint.
+      Student: identical to Option A (exp02). Cross-region evaluation target.
+      Matches training budget of Exp2/Exp12 exactly.
+
+    training:
+      train_region: "french"
+      epochs: 20
+      batch_size: 16  # Per-GPU batch under DDP (16 × 8 GPUs = 128 effective)
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+      optimizer: "adamw"
+      scheduler: "cosine"
+      warmup_epochs: 5
+      skip_val_until_epoch: 5
+      freeze_backbone: true
+      unfreeze_after_epoch: null
+      class_balancing: "sqrt"
+      balanced_sampling: true
+      sampling_method: "sqrt"
+      multi_gpu: true
+      augmentation:
+        random_horizontal_flip: true
+        horizontal_flip_p: 0.5
+        random_vertical_flip: true
+        vertical_flip_p: 0.5
+        random_rotation: 30
+        random_grayscale: 0.2
+        color_jitter:
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.2
+          hue: 0.1
+        random_affine:
+          enabled: true
+          degrees: 0
+          translate: [0.1, 0.1]
+          scale: [0.9, 1.1]
+        gaussian_blur:
+          enabled: true
+          kernel_size: [3, 5]
+          sigma: [0.1, 2.0]
+
+    distillation:
+      caption_model: "gemma4-bf16"
+      text_embed_dim: 384
+      caption_dropout: 0.3
+      temperature: 3.0
+      alpha: 0.5
+      teacher_epochs: null
+      student_epochs: null
+
+    preprocessing:
+      normalization_mode: "imagenet"
+      stainnorm:
+        enabled: false
+      hist_match:
+        enabled: false
+
+    cross_region_targets: ["hungarian", "mediterranean", "swedish"]
+    cross_region_overlap:
+      hungarian: 4
+      mediterranean: 7
+      swedish: 11
+    eval_test_sets: ["ts2_expert", "ts1_legacy"]
+    output_dir: "data/04_evaluation/results/exp17_distill_french"
+
+  # -------------------------------------------------------------------------
+  # EXPERIMENT 18: Distillation Hungarian
+  # -------------------------------------------------------------------------
+  distill_hungarian:
+    name: "Option D: Distillation (Hungarian)"
+    description: |
+      Distillation trained on Hungarian region (5 slides, 5 species).
+      Teacher: Option C (exp13_lupi_hungarian) teacher checkpoint.
+      Matches Exp3/Exp13 training budget exactly.
+
+    training:
+      train_region: "hungarian"
+      epochs: 18
+      batch_size: 16  # Per-GPU batch under DDP (16 × 8 GPUs = 128 effective)
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+      optimizer: "adamw"
+      scheduler: "cosine"
+      warmup_epochs: 5
+      skip_val_until_epoch: 5
+      freeze_backbone: true
+      unfreeze_after_epoch: null
+      class_balancing: "sqrt"
+      balanced_sampling: true
+      sampling_method: "sqrt"
+      multi_gpu: true
+      augmentation:
+        random_horizontal_flip: true
+        horizontal_flip_p: 0.5
+        random_vertical_flip: true
+        vertical_flip_p: 0.5
+        random_rotation: 30
+        random_grayscale: 0.2
+        color_jitter:
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.2
+          hue: 0.1
+        random_affine:
+          enabled: true
+          degrees: 0
+          translate: [0.1, 0.1]
+          scale: [0.9, 1.1]
+        gaussian_blur:
+          enabled: true
+          kernel_size: [3, 5]
+          sigma: [0.1, 2.0]
+
+    distillation:
+      caption_model: "gemma4-bf16"
+      text_embed_dim: 384
+      caption_dropout: 0.3
+      temperature: 3.0
+      alpha: 0.5
+      teacher_epochs: null
+      student_epochs: null
+
+    preprocessing:
+      normalization_mode: "imagenet"
+      stainnorm:
+        enabled: false
+      hist_match:
+        enabled: false
+
+    cross_region_targets: ["french", "swedish"]
+    eval_test_sets: ["ts2_expert", "ts1_legacy"]
+    output_dir: "data/04_evaluation/results/exp18_distill_hungarian"
+
+  # -------------------------------------------------------------------------
+  # EXPERIMENT 19: Distillation Swedish
+  # -------------------------------------------------------------------------
+  distill_swedish:
+    name: "Option D: Distillation (Swedish)"
+    description: |
+      Distillation trained on Swedish region (19 slides, 15 species).
+      Teacher: Option C (exp14_lupi_swedish) teacher checkpoint.
+      Matches Exp4/Exp14 training budget exactly.
+
+    training:
+      train_region: "swedish"
+      epochs: 750
+      batch_size: 16  # Per-GPU batch under DDP (16 × 8 GPUs = 128 effective)
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+      optimizer: "adamw"
+      scheduler: "cosine"
+      warmup_epochs: 188
+      skip_val_until_epoch: 188
+      freeze_backbone: true
+      unfreeze_after_epoch: null
+      class_balancing: "sqrt"
+      balanced_sampling: true
+      sampling_method: "sqrt"
+      multi_gpu: true
+      augmentation:
+        random_horizontal_flip: true
+        horizontal_flip_p: 0.5
+        random_vertical_flip: true
+        vertical_flip_p: 0.5
+        random_rotation: 30
+        random_grayscale: 0.2
+        color_jitter:
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.2
+          hue: 0.1
+        random_affine:
+          enabled: true
+          degrees: 0
+          translate: [0.1, 0.1]
+          scale: [0.9, 1.1]
+        gaussian_blur:
+          enabled: true
+          kernel_size: [3, 5]
+          sigma: [0.1, 2.0]
+
+    distillation:
+      caption_model: "gemma4-bf16"
+      text_embed_dim: 384
+      caption_dropout: 0.3
+      temperature: 3.0
+      alpha: 0.5
+      teacher_epochs: null
+      student_epochs: null
+
+    preprocessing:
+      normalization_mode: "imagenet"
+      stainnorm:
+        enabled: false
+      hist_match:
+        enabled: false
+
+    cross_region_targets: ["french", "hungarian", "mediterranean"]
+    cross_region_overlap:
+      french: 11
+      hungarian: 4
+      mediterranean: 3
+    eval_test_sets: ["ts2_expert", "ts1_legacy"]
+    output_dir: "data/04_evaluation/results/exp19_distill_swedish"
+
+  # -------------------------------------------------------------------------
+  # EXPERIMENT 20: Distillation Mediterranean
+  # -------------------------------------------------------------------------
+  distill_mediterranean:
+    name: "Option D: Distillation (Mediterranean)"
+    description: |
+      Distillation trained on Mediterranean region (9 slides, ~31K samples).
+      Teacher: Option C (exp15_lupi_mediterranean) teacher checkpoint.
+      Matches Exp5/Exp15 training budget exactly.
+
+    training:
+      train_region: "mediterranean"
+      epochs: 298
+      batch_size: 16  # Per-GPU batch under DDP (16 × 8 GPUs = 128 effective)
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+      optimizer: "adamw"
+      scheduler: "cosine"
+      warmup_epochs: 75
+      skip_val_until_epoch: 75
+      freeze_backbone: true
+      unfreeze_after_epoch: null
+      class_balancing: "sqrt"
+      balanced_sampling: true
+      sampling_method: "sqrt"
+      multi_gpu: true  # DDP handles small datasets fine
+      augmentation:
+        random_horizontal_flip: true
+        horizontal_flip_p: 0.5
+        random_vertical_flip: true
+        vertical_flip_p: 0.5
+        random_rotation: 30
+        random_grayscale: 0.2
+        color_jitter:
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.2
+          hue: 0.1
+        random_affine:
+          enabled: true
+          degrees: 0
+          translate: [0.1, 0.1]
+          scale: [0.9, 1.1]
+        gaussian_blur:
+          enabled: true
+          kernel_size: [3, 5]
+          sigma: [0.1, 2.0]
+
+    distillation:
+      caption_model: "gemma4-bf16"
+      text_embed_dim: 384
+      caption_dropout: 0.3
+      temperature: 3.0
+      alpha: 0.5
+      teacher_epochs: null
+      student_epochs: null
+
+    preprocessing:
+      normalization_mode: "imagenet"
+      stainnorm:
+        enabled: false
+      hist_match:
+        enabled: false
+
+    cross_region_targets: ["french", "swedish"]
+    cross_region_overlap:
+      french: 7
+      swedish: 3
+    eval_test_sets: ["ts2_expert", "ts1_legacy"]
+    output_dir: "data/04_evaluation/results/exp20_distill_mediterranean"
+
+# =============================================================================
+# METRICS TO COMPUTE
+# =============================================================================
+metrics:
+  classification:
+    - top1_accuracy
+    - top5_accuracy
+    - macro_f1
+    - weighted_f1
+    - per_class_accuracy
+    - per_class_f1
+    - confusion_matrix
+    
+  timing:
+    - training_time_per_epoch
+    - inference_time_per_sample

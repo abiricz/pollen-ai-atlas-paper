@@ -1,0 +1,73 @@
+cff-version: 1.2.0
+message: "If you use this repository, please cite the preprint and the Zenodo data release."
+title: "Pollen AI Atlas"
+type: software
+license: Apache-2.0
+authors:
+  - family-names: "Biricz"
+    given-names: "András"
+  - family-names: "Gedda"
+    given-names: "Björn"
+  - family-names: "Magyar"
+    given-names: "Donát"
+  - family-names: "Spanu"
+    given-names: "Antonio"
+  - family-names: "Fillinger"
+    given-names: "János"
+  - family-names: "Pollner"
+    given-names: "Péter"
+  - family-names: "Csabai"
+    given-names: "István"
+abstract: "Code companion for the Pollen AI Atlas preprint and processed-data release, covering whole-slide initialization, token-level mining, filtering, captioning, and downstream evaluation for million-scale multimodal pollen microscopy."
+keywords:
+  - pollen
+  - microscopy
+  - multimodal learning
+  - whole-slide imaging
+  - vision-language models
+preferred-citation:
+  type: article
+  authors:
+    - family-names: "Biricz"
+      given-names: "András"
+    - family-names: "Gedda"
+      given-names: "Björn"
+    - family-names: "Magyar"
+      given-names: "Donát"
+    - family-names: "Spanu"
+      given-names: "Antonio"
+    - family-names: "Fillinger"
+      given-names: "János"
+    - family-names: "Pollner"
+      given-names: "Péter"
+    - family-names: "Csabai"
+      given-names: "István"
+  title: "Million-scale multimodal pollen microscopy with expert-guided foundation models"
+  journal: "arXiv"
+  year: 2026
+  doi: "10.48550/arXiv.2606.17809"
+  identifiers:
+    - type: arxiv
+      value: "2606.17809"
+references:
+  - type: dataset
+    authors:
+      - family-names: "Biricz"
+        given-names: "András"
+      - family-names: "Gedda"
+        given-names: "Björn"
+      - family-names: "Magyar"
+        given-names: "Donát"
+      - family-names: "Spanu"
+        given-names: "Antonio"
+      - family-names: "Fillinger"
+        given-names: "János"
+      - family-names: "Pollner"
+        given-names: "Péter"
+      - family-names: "Csabai"
+        given-names: "István"
+    title: "Pollen AI Atlas: million-scale multimodal pollen microscopy with expert-guided foundation models"
+    year: 2026
+    publisher: "Zenodo"
+    version: "v1"
+    doi: "10.5281/zenodo.20690944"

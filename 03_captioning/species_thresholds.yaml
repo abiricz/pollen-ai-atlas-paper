@@ -1,0 +1,216 @@
+# Copyright 2026 András Biricz. Licensed under the Apache License, Version 2.0.
+
+# Species Threshold Configuration
+# ================================
+#
+# PURPOSE:
+#   Filter POLLEN vs NON-POLLEN (background) from classifier predictions.
+#   The classifier outputs probability for each class, but we only care about
+#   whether the prediction is "any pollen class" vs "background".
+#
+#   Note: The classifier predicts 52 classes (51 pollen + 1 background).
+#   Filtering uses: sum(pollen_probs) > threshold to keep as pollen.
+#
+# HITL (Human-In-The-Loop) Workflow:
+#   1. Run pipeline with default thresholds
+#   2. Inspect sample_crops/ output (5-10 samples)
+#   3. Adjust threshold in this file
+#   4. Re-run pipeline on same slide
+#   5. Repeat until quality is satisfactory
+#   6. Record final threshold with notes
+#
+# Guidelines:
+#   - Higher threshold (0.7+) = More precise, fewer false positives
+#   - Lower threshold (0.3-0.5) = Higher recall, may include debris
+#   - Species with similar morphology need higher thresholds
+#   - Distinctive species (e.g., Pinus saccate) can use lower thresholds
+
+# Default thresholds applied when species not listed
+defaults:
+  classifier_threshold: 0.5    # Pollen probability threshold (pollen vs background)
+  nms_iou: 0.10               # Remove overlapping detections
+  conf_thr: 0.0               # Keep all after attention reranking
+
+
+## THESE WERE NOT USED BELOW, but kept for convenience and showing the possible setup.
+
+# ============================================
+# PER-SLIDE OVERRIDES (takes precedence over species)
+# Use this for slides that need special handling
+# ============================================
+# 
+# Example format:
+#   slides:
+#     corylus_2_edf:
+#       classifier_threshold: 0.65
+#       notes: "This slide has dense debris, need higher threshold"
+#     ambrosia_edf:
+#       classifier_threshold: 0.4
+#       notes: "High quality slide, can use lower threshold"
+#
+slides:
+  # Uncomment and add per-slide overrides as needed:
+  # corylus_2_edf:
+  #   classifier_threshold: 0.65
+  #   notes: "Dense debris, higher threshold"
+
+# Per-species calibration
+# Format:
+#   species_name:
+#     classifier_threshold: float (0.0-1.0)
+#     notes: "Reason for threshold choice"
+#     validated: true/false (whether manually verified)
+#     date: "YYYY-MM-DD"
+
+species:
+# Uncomment to add species-specific thresholds
+  # ============================================
+  # BETULACEAE FAMILY
+  # ============================================
+#  corylus:
+#    classifier_threshold: 0.6
+#    notes: "Similar to Betula, needs higher threshold to distinguish"
+#    validated: true
+#    date: "2025-12-26"
+#    
+#  betula:
+#    classifier_threshold: 0.6
+#    notes: "Similar to Corylus, ambiguous cases should be excluded"
+#    validated: false
+#    
+#  carpinus:
+#    classifier_threshold: 0.5
+#    notes: "Distinctive triporate, default threshold OK"
+#    validated: false
+    
+  # ============================================
+  # PINACEAE FAMILY (Saccate pollen)
+  # ============================================
+#  pinus:
+#    classifier_threshold: 0.4
+#    notes: "Very distinctive bisaccate morphology, lower threshold OK"
+#    validated: false
+#    
+#  picea:
+#    classifier_threshold: 0.4
+#    notes: "Bisaccate like Pinus, distinctive size"
+#    validated: false
+#    
+#  cedrus:
+#    classifier_threshold: 0.4
+#    notes: "Bisaccate, large size"
+#    validated: false
+#    
+  # ============================================
+  # ASTERACEAE FAMILY
+  # ============================================
+#  ambrosia:
+#    classifier_threshold: 0.5
+#    notes: "Echinate (spiny) surface, distinctive"
+#    validated: false
+    
+  # ============================================
+  # CUPRESSACEAE FAMILY
+  # ============================================
+#  cupressus:
+#    classifier_threshold: 0.55
+#    notes: "Spherical, can be confused with debris"
+#    validated: false
+    
+  # ============================================
+  # POACEAE FAMILY (Grasses)
+  # ============================================
+#  triticum_aestivum:
+#    classifier_threshold: 0.5
+#    notes: "Large grass pollen, monoporate"
+#    validated: false
+    
+#  festuca:
+#    classifier_threshold: 0.5
+#    notes: "Grass pollen, size varies"
+#    validated: false
+    
+  # ============================================
+  # OLEACEAE FAMILY
+  # ============================================
+#  fraxinus:
+#    classifier_threshold: 0.5
+#    notes: "Tricolpate, distinctive"
+#    validated: false
+    
+#  ligustrum:
+#    classifier_threshold: 0.5
+#    notes: "Similar to other Oleaceae"
+#    validated: false
+    
+  # ============================================
+  # URTICACEAE / CANNABACEAE
+  # ============================================
+#  urtica:
+#    classifier_threshold: 0.55
+#    notes: "Small, similar to Parietaria"
+#    validated: false
+#    
+#  parietaria:
+#    classifier_threshold: 0.55
+#    notes: "Small, similar to Urtica"
+#    validated: false
+#    
+#  humulus_japonicus:
+#    classifier_threshold: 0.5
+#    notes: "Triporate, larger than Urtica"
+#    validated: false
+    
+  # ============================================
+  # OTHER SPECIES
+  # ============================================
+#  quercus:
+#    classifier_threshold: 0.5
+#    notes: "Tricolporate, distinctive"
+#    validated: false
+#    
+#  platanus:
+#    classifier_threshold: 0.5
+#    notes: "Tricolpate, reticulate"
+#    validated: false
+#    
+#  salix:
+#    classifier_threshold: 0.5
+#    notes: "Tricolpate"
+#    validated: false
+    
+#  ulmus:
+#    classifier_threshold: 0.5
+#    notes: "Pentaporate/hexaporate"
+#    validated: false
+#    
+#  tilia:
+#    classifier_threshold: 0.5
+#    notes: "Tricolporate"
+#    validated: false
+#    
+#  ginkgo:
+#    classifier_threshold: 0.45
+#    notes: "Monosulcate, distinctive boat shape"
+#    validated: false
+
+# ============================================
+# NOTES FOR THRESHOLD CALIBRATION
+# ============================================
+#
+# When to INCREASE threshold (e.g., 0.5 → 0.7):
+#   - Many false positives (debris, bubbles, overlapping grains)
+#   - Confusion with morphologically similar species
+#   - High-value dataset where precision matters more than recall
+#
+# When to DECREASE threshold (e.g., 0.5 → 0.3):
+#   - Missing valid pollen grains (low recall)
+#   - Species has distinctive features
+#   - Training data may not fully represent species variation
+#
+# Validation procedure:
+#   1. Run with current threshold
+#   2. Check sample_crops/ output
+#   3. If >10% false positives: increase threshold
+#   4. If <90% recall on obvious grains: decrease threshold
+#   5. Mark as validated: true once satisfied
